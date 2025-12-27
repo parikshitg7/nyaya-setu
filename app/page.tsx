@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-// NEW: Import the engine creation function
+// Import the engine creation function from the AI library
 import { CreateWebWorkerMLCEngine } from "@mlc-ai/web-llm";
+// Import our local "Textbook" of laws
+import { legalData } from "./legal_data";
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -10,19 +12,18 @@ export default function Home() {
     { role: "assistant", content: "Hello! I am Nyaya Setu. Loading the AI model... (This may take a while)" }
   ]);
   const [isLoading, setIsLoading] = useState(true); // To track if AI is ready
-  const engineRef = useRef(null); // To store the AI engine instance
+  const engineRef = useRef<any>(null); // To store the AI engine instance
 
-  // NEW: Load the AI when the page starts
+  // Load the AI when the page starts
   useEffect(() => {
     async function loadEngine() {
-      // 1. Point to the worker file we just made
+      // Point to the worker file we created earlier
       const engine = await CreateWebWorkerMLCEngine(
         new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }),
         "TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC", // The Model ID
         {
           initProgressCallback: (info) => {
             console.log(info.text); // Look at console to see download progress
-            // Optional: You can update a progress bar state here later
           },
         }
       );
@@ -37,20 +38,47 @@ export default function Home() {
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
-    // 1. Add User Message
-    const userMessage = { role: "user", content: input };
+    const userText = input.trim();
+    
+    // 1. Show User Message immediately
+    const userMessage = { role: "user", content: userText };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
 
-    // 2. Ask the AI (The Magic Part)
-    // We create a temporary array including the history + new message
-    const response = await engineRef.current.chat.completions.create({
-      messages: [...messages, userMessage],
-    });
+    // 2. SEARCH: Find relevant law in our "Textbook"
+    // We check if any keyword from the law exists in the user's question
+    const foundLaw = legalData.find((law) => 
+      law.keywords.some((keyword) => userText.toLowerCase().includes(keyword))
+    );
 
-    // 3. Add AI Response
-    const aiMessage = response.choices[0].message;
-    setMessages((prev) => [...prev, { role: "assistant", content: aiMessage.content }]);
+    // 3. Construct the "Prompt" for the AI
+    // If we found a law, we force the AI to use it.
+    let finalSystemPrompt = "You are Nyaya Setu, a helpful Indian Legal Assistant. Answer in simple English.";
+    
+    if (foundLaw) {
+      finalSystemPrompt += `\n\nIMPORTANT CONTEXT: Use this law to answer the user: "${foundLaw.content}"`;
+    } else {
+      finalSystemPrompt += "\n\nNote: Mention that you are an AI and this is general advice.";
+    }
+
+    // 4. Send to AI
+    // We send a hidden "System" message first to give the AI instructions
+    const messagesToSend = [
+      { role: "system", content: finalSystemPrompt },
+      ...messages, // Include past conversation history
+      userMessage
+    ];
+
+    try {
+      const response = await engineRef.current.chat.completions.create({
+        messages: messagesToSend,
+      });
+
+      const aiMessage = response.choices[0].message;
+      setMessages((prev) => [...prev, { role: "assistant", content: aiMessage.content }]);
+    } catch (error) {
+      console.error("AI Error:", error);
+    }
   };
 
   return (
@@ -64,11 +92,14 @@ export default function Home() {
       {/* CHAT AREA */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg, index) => (
-          <div key={index} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[80%] p-3 rounded-lg ${msg.role === "user" ? "bg-orange-600" : "bg-gray-700"}`}>
-              {msg.content}
+          // Don't show the hidden "system" messages in the UI
+          msg.role === "system" ? null : (
+            <div key={index} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[80%] p-3 rounded-lg ${msg.role === "user" ? "bg-orange-600" : "bg-gray-700"}`}>
+                {msg.content}
+              </div>
             </div>
-          </div>
+          )
         ))}
       </div>
 
