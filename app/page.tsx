@@ -2,21 +2,23 @@
 
 import { useState, useEffect, useRef } from "react";
 import { CreateWebWorkerMLCEngine } from "@mlc-ai/web-llm";
-import { legalData } from "./legal_data";
 
 export default function Home() {
   // --- STATE MANAGEMENT ---
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([
-    { role: "assistant", content: "Hello! I am Nyaya Setu. Loading the AI model... (This may take a while)" }
+    { role: "assistant", content: "Hello! I am Nyaya Setu. Loading AI & Legal Database..." }
   ]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isOnline, setIsOnline] = useState(true); // Tracks internet connection
-  const engineRef = useRef<any>(null); // Stores the AI engine
+  const [isOnline, setIsOnline] = useState(true);
+  
+  // --- REFS ---
+  const engineRef = useRef<any>(null); // Stores the AI brain
+  const ragWorkerRef = useRef<Worker | null>(null); // Stores the Database Worker
 
   // --- INITIALIZATION EFFECT ---
   useEffect(() => {
-    // 1. Setup Network Listeners (The Shield Feature)
+    // 1. Setup Network Listeners
     if (typeof window !== "undefined") {
       setIsOnline(navigator.onLine);
       const handleOnline = () => setIsOnline(true);
@@ -24,7 +26,6 @@ export default function Home() {
       window.addEventListener('online', handleOnline);
       window.addEventListener('offline', handleOffline);
 
-      // Cleanup listeners when leaving
       return () => {
         window.removeEventListener('online', handleOnline);
         window.removeEventListener('offline', handleOffline);
@@ -32,22 +33,37 @@ export default function Home() {
     }
   }, []);
 
-  // --- LOAD AI ENGINE ---
+  // --- LOAD AI & DATABASE ---
+  // --- LOAD AI & DATABASE ---
   useEffect(() => {
+    // 1. Initialize the RAG (Database) Worker
+    // NOTICE: We now point to the public folder file "/workers/rag_worker.js"
+    const ragWorker = new Worker("/workers/rag_worker.js", { type: "module" });
+    
+    ragWorker.onmessage = (e) => {
+      if (e.data.status === "ready") {
+        console.log("✅ Legal Database Ready");
+      }
+    };
+    
+    // Tell worker to start indexing data
+    ragWorker.postMessage({ type: "init" });
+    ragWorkerRef.current = ragWorker;
+
+    // 2. Initialize the AI Engine (Keep this same)
     async function loadEngine() {
       try {
-        // Point to the worker file
         const engine = await CreateWebWorkerMLCEngine(
           new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }),
           "TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC", 
           {
             initProgressCallback: (info) => {
-              console.log(info.text); // Check console for download progress
+              console.log(info.text);
             },
           }
         );
         engineRef.current = engine;
-        setIsLoading(false);
+        setIsLoading(false); // AI is ready
         setMessages(prev => [...prev, { role: "assistant", content: "AI Ready! Ask me anything about Indian Law." }]);
       } catch (error) {
         console.error("Failed to load AI:", error);
@@ -55,51 +71,99 @@ export default function Home() {
     }
 
     loadEngine();
+
+    // Cleanup workers when page closes
+    return () => {
+      ragWorker.terminate();
+    };
   }, []);
 
-  // --- SEND MESSAGE LOGIC ---
+  // --- SEND MESSAGE LOGIC (WITH TIMEOUT SAFETY) ---
+  // --- SEND MESSAGE LOGIC (CLEANER) ---
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
     const userText = input.trim();
+    console.log("1. User sent:", userText);
     
-    // 1. Add User Message to Chat
+    // UI Updates
     const userMessage = { role: "user", content: userText };
     setMessages((prev) => [...prev, userMessage]);
-    setInput(""); // Clear input box
+    setInput(""); 
 
-    // 2. SEARCH: Scan "legal_data.ts" for keywords
-    const foundLaw = legalData.find((law) => 
-      law.keywords.some((keyword) => userText.toLowerCase().includes(keyword))
-    );
-
-    // 3. PROMPT ENGINEERING: Build instructions for the AI
-    let finalSystemPrompt = "You are Nyaya Setu, a helpful Indian Legal Assistant. Answer in simple English.";
+    // 2. SMART SEARCH
+    console.log("2. Starting Database Search...");
+    let searchContext = "";
     
-    if (foundLaw) {
-      finalSystemPrompt += `\n\nIMPORTANT CONTEXT: Use this specific law to answer the user: "${foundLaw.content}"`;
-    } else {
-      finalSystemPrompt += "\n\nNote: You are an AI assistant. If you don't know the specific law, give general advice but warn the user to consult a lawyer.";
+    if (ragWorkerRef.current) {
+      try {
+        let timeoutId: any;
+
+        const searchPromise = new Promise<string>((resolve) => {
+          const worker = ragWorkerRef.current;
+          if (!worker) return resolve("");
+
+          const handler = (e: MessageEvent) => {
+            worker.removeEventListener("message", handler);
+            const hits = e.data.hits;
+            if (hits && hits.length > 0) {
+              const context = hits.map((h: any) => h.document.content).join("\n\n");
+              resolve(context);
+            } else {
+              resolve("");
+            }
+          };
+          worker.addEventListener("message", handler);
+          worker.postMessage({ type: "search", query: userText });
+        });
+
+        const timeoutPromise = new Promise<string>((resolve) => {
+          timeoutId = setTimeout(() => {
+            console.warn("⚠️ Search timed out (3s limit).");
+            resolve("");
+          }, 3000);
+        });
+
+        // Run the Race
+        searchContext = await Promise.race([searchPromise, timeoutPromise]);
+        
+        // STOP THE TIMER (The Fix)
+        clearTimeout(timeoutId);
+
+        console.log("3. Search Result:", searchContext ? "Found Context" : "No Context Found");
+
+      } catch (err) {
+        console.error("Search failed:", err);
+      }
     }
 
-    // 4. PREPARE HISTORY: Send context + history + new message
+    // 3. PROMPT & AI
+    let finalSystemPrompt = "You are Nyaya Setu, a helpful Indian Legal Assistant. Answer in simple English.";
+    
+    if (searchContext) {
+      finalSystemPrompt += `\n\nIMPORTANT CONTEXT: Use this law to answer the user:\n"${searchContext}"`;
+    } else {
+      finalSystemPrompt += "\n\nNote: Mention that you are an AI and this is general advice.";
+    }
+
+    console.log("4. Sending to AI...");
     const messagesToSend = [
       { role: "system", content: finalSystemPrompt },
-      ...messages.filter(m => m.role !== "system"), // Clean old system prompts
+      ...messages.filter(m => m.role !== "system"),
       userMessage
     ];
 
     try {
-      // 5. GENERATE RESPONSE
       const response = await engineRef.current.chat.completions.create({
         messages: messagesToSend,
+        temperature: 0.1, // Keep it strict
       });
 
+      console.log("5. AI Responded!");
       const aiMessage = response.choices[0].message;
       setMessages((prev) => [...prev, { role: "assistant", content: aiMessage.content }]);
     } catch (error) {
       console.error("AI Generation Error:", error);
-      setMessages((prev) => [...prev, { role: "assistant", content: "Error: I could not generate an answer. Please check console." }]);
     }
   };
 
@@ -127,7 +191,6 @@ export default function Home() {
       {/* CHAT HISTORY AREA */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
         {messages.map((msg, index) => (
-          // Hide system messages
           msg.role === "system" ? null : (
             <div key={index} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               <div 
@@ -142,7 +205,6 @@ export default function Home() {
             </div>
           )
         ))}
-        {/* Dummy div to auto-scroll could go here */}
       </div>
 
       {/* INPUT AREA */}
