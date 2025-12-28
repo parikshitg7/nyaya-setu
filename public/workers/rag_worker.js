@@ -322,7 +322,8 @@ async function initialize() {
     env.useBrowserCache = true;
 
     // Load AI Model (Downloads once, then caches)
-    extractor = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    // We use the Multilingual model to support Hindi/Hinglish natively
+    extractor = await pipeline("feature-extraction", "Xenova/paraphrase-multilingual-MiniLM-L12-v2");
 
     // Create Database
     db = await create({
@@ -364,6 +365,7 @@ self.onmessage = async (e) => {
       mode: "hybrid",
       term: e.data.query,
       vector: { value: Array.from(out.data), property: "embedding" },
+      similarity: 0.6,
       limit: 2
     });
     self.postMessage({ status: "results", hits: res.hits });
