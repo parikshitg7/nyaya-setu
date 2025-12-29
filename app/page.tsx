@@ -53,10 +53,12 @@ export default function Home() {
     // 2. Initialize the AI Engine (Keep this same)
     async function loadEngine() {
       try {
+        // ... inside async function loadEngine()
         const engine = await CreateWebWorkerMLCEngine(
           new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }),
-          "TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC", 
+          "Qwen2.5-1.5B-Instruct-q4f16_1-MLC", // <--- NEW SMARTER MODEL
           {
+// ...
             initProgressCallback: (info) => {
               console.log(info.text);
             },
@@ -138,12 +140,22 @@ export default function Home() {
     }
 
     // 3. PROMPT & AI
-    let finalSystemPrompt = "You are Nyaya Setu, a helpful Indian Legal Assistant. Answer in simple English.";
+    // 3. PROMPT & AI
+    let finalSystemPrompt = `
+    You are Nyaya Setu, an empathetic and expert Indian Legal AI Assistant. 
+    
+    INSTRUCTIONS:
+    1. ANALYZE the "Relevant Laws" provided below. Use them to answer the user.
+    2. IF the user mentions "husband", "wife", "dowry", or "hitting" in a marriage context, PRIORITIZE Section 498A or Domestic Violence Act over general assault laws.
+    3. SPEAK DIRECTLY to the user (e.g., "I am sorry to hear that...", "You can file an FIR..."). 
+    4. DO NOT make up fake "Question/Answer" dialogues. Just answer the user.
+    5. SIMPLIFY the legal language. Explain it like a friend.
+    `;
     
     if (searchContext) {
-      finalSystemPrompt += `\n\nIMPORTANT CONTEXT: Use this law to answer the user:\n"${searchContext}"`;
+      finalSystemPrompt += `\n\nRELEVANT LAWS FOUND:\n"${searchContext}"`;
     } else {
-      finalSystemPrompt += "\n\nNote: Mention that you are an AI and this is general advice.";
+      finalSystemPrompt += "\n\nNote: I could not find a specific law in my database, but I can offer general advice.";
     }
 
     console.log("4. Sending to AI...");
@@ -157,6 +169,8 @@ export default function Home() {
       const response = await engineRef.current.chat.completions.create({
         messages: messagesToSend,
         temperature: 0.1, // Keep it strict
+        repetition_penalty: 1.2,  // <--- ADD THIS LINE (Prevents "Mera pati mera pati" loops)
+        //max_tokens: 300,          // <--- ADD THIS LINE (Prevents long, rambling answers)
       });
 
       console.log("5. AI Responded!");
